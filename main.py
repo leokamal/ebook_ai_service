@@ -7,7 +7,7 @@ app = FastAPI()
 bucket_name = "ebook-ai-e51a0.appspot.com"
 
 
-package__import__('pysqlite3')
+pysqlite3 = __import__('pysqlite3')
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 

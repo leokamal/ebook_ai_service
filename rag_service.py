@@ -14,7 +14,7 @@ import os
 import firebase_admin
 from langchain.schema import Document
 
-package__import__('pysqlite3')
+pysqlite3 = __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 

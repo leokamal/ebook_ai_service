@@ -83,9 +83,13 @@ def query_database(query):
         vector_store = Chroma(embedding_function=embeddings_model, persist_directory=temp_dir)
         prompt = PromptTemplate.from_template(
             """ 
-              "Rewrite the context as a readable text"
-              "\n\n"
-              "{context}"
+                You are a highly skilled assistant who excels in rewriting and summarizing information based on a given query. Given the following context and question, your task is to rewrite the context so that it directly addresses the question. Ensure that the rewritten context is relevant, concise, and directly related to the user's query.
+
+            **Context:** {context}
+
+            **Question:** {input}
+
+            **Rewritten Context:**
         """
         )
         retriever = vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.4})

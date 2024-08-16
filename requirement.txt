@@ -1,8 +1,7 @@
+langchain
 langchain_google_genai 
 chromadb 
 PyPDF2 
 langchain-community 
 firebase_admin 
 sentence_transformers
-langchain
---upgrade langchain

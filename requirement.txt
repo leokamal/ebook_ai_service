@@ -1,2 +1,7 @@
-pip3 install langchain_google_genai chromadb PyPDF2 langchain-community firebase_admin sentence_transformers
-pip3 install --upgrade langchain
+langchain_google_genai 
+chromadb 
+PyPDF2 
+langchain-community 
+firebase_admin 
+sentence_transformers
+langchain

@@ -2,6 +2,7 @@ langchain_google_genai
 chromadb 
 PyPDF2 
 langchain-community 
+langchain_chroma
 firebase_admin 
 langchain-huggingface
 sentence_transformers

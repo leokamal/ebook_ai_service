@@ -7,8 +7,8 @@ app = FastAPI()
 bucket_name = "ebook-ai-e51a0.appspot.com"
 
 
-# pysqlite3 = __import__('pysqlite3')
-# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+pysqlite3 = __import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 
 @app.get("/query-database/")

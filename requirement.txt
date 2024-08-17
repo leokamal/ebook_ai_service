@@ -3,4 +3,5 @@ chromadb
 PyPDF2 
 langchain-community 
 firebase_admin 
+langchain-huggingface
 sentence_transformers

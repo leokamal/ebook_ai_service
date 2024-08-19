@@ -6,3 +6,7 @@ langchain_chroma
 firebase_admin 
 langchain-huggingface
 sentence_transformers
+easyocr
+python-multipart
+torch
+pillow

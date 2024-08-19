@@ -7,7 +7,7 @@ import io
 def perform_ocr(file_bytes, lang):
     try:
         # Initialize the EasyOCR reader with the specified language(s)
-        reader = easyocr.Reader([lang], gpu=True)  # Use GPU if available
+        reader = easyocr.Reader([lang])
 
         # Read the image from the uploaded file
         img = Image.open(io.BytesIO(file_bytes))

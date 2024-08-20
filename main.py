@@ -29,8 +29,8 @@ app.add_middleware(
 bucket_name = "ebook-ai-e51a0.appspot.com"
 
 # Workaround to ensure `pysqlite3` is used as `sqlite3`
-# pysqlite3 = __import__('pysqlite3')
-# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+pysqlite3 = __import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 # Hello World endpoint
 @app.get("/hello")

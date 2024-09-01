@@ -81,53 +81,68 @@ def generate_and_store_database_task():
                 print(f"Uploaded {file} to Firebase Storage")
 
 # Function to load the database from Firebase Storage
-def load_database_from_firebase(temp_dir):
+def load_database_from_firebase(local_dir, force=False):
     storage_bucket = storage.bucket(bucket_name)
     # List all blobs (files) with a prefix of "chroma_db/"
     blobs = storage_bucket.list_blobs(prefix="chroma_db/")
     
     # Download the database files from Firebase Storage
     for blob in blobs:
-        local_path = os.path.join(temp_dir, os.path.basename(blob.name))
-        blob.download_to_filename(local_path)
-        print(f"Downloaded {blob.name} to {local_path}")
+        local_path = os.path.join(local_dir, os.path.basename(blob.name))
+        # Check if the file already exists locally
+        if not os.path.exists(local_path) or force:
+            blob.download_to_filename(local_path)
+            print(f"Downloaded {blob.name} to {local_path}")
+        else:
+            print(f"File {local_path} already exists, skipping download.")
+            
 
 # Function to query the database
 def query_database(query):
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Load the database files from Firebase Storage
-        load_database_from_firebase(temp_dir)
+    # Define a persistent local directory for the database files
+    local_dir = "./chroma_db_local"
+    
+    # Create the directory if it doesn't exist
+    os.makedirs(local_dir, exist_ok=True)
 
-        # Define the model name for embeddings
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
-        embeddings_model = HuggingFaceEmbeddings(model_name=model_name)
-        # Initialize the Chroma vector store
-        vector_store = Chroma(embedding_function=embeddings_model, persist_directory=temp_dir)
-        
-        # Define a prompt template for the query
-        prompt = PromptTemplate.from_template(
-            """ 
-                You are a highly skilled assistant who excels in rewriting, summarizing, and generating relevant information based on a given context. 
-                Your task is to rewrite and summarize the context so that it directly addresses the question. 
-                Ensure that the rewritten context is relevant, concise, and directly related to the user's question. 
-                If the data (context) doesn't exist, say so.
+    # Load the database files from Firebase Storage if not already present locally
+    load_database_from_firebase(local_dir)
 
-                **Context:** {context}
+    # Define the model name for embeddings
+    model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    embeddings_model = HuggingFaceEmbeddings(model_name=model_name)
 
-                **Question:** {input}
+    # Initialize the Chroma vector store using the local directory
+    vector_store = Chroma(embedding_function=embeddings_model, persist_directory=local_dir)
+    
+    # Define a prompt template for the query
+    prompt = PromptTemplate.from_template(
+        """ 
+            You are a highly skilled assistant who excels in rewriting, summarizing, and generating relevant information based on a given context. 
+            Your task is to rewrite and summarize the context so that it directly addresses the question. 
+            Ensure that the rewritten context is relevant, concise, and directly related to the user's question. 
+            If the data (context) doesn't exist, say so.
 
-                **Rewritten and Summarized Context:**
-            """
-        )
-      
-        # Create a retriever with similarity score threshold
-        retriever = vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.4})
-        # Initialize the language model for responses
-        model_name = "gemini-pro"
-        llm = ChatGoogleGenerativeAI(model=model_name)
-        # Create a retrieval chain to process the query
-        chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
-        # Invoke the chain and return the response
-        return chain.invoke({"input": query})
+            **Context:** {context}
+
+            **Question:** {input}
+
+            **Rewritten and Summarized Context:**
+        """
+    )
+  
+    # Create a retriever with similarity score threshold
+    retriever = vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.4})
+    
+    # Initialize the language model for responses
+    model_name = "gemini-pro"
+    llm = ChatGoogleGenerativeAI(model=model_name)
+    
+    # Create a retrieval chain to process the query
+    chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
+    
+    # Invoke the chain and return the response
+    return chain.invoke({"input": query})
+
 
 # To start FastAPI, use: uvicorn script_name:app --reload

@@ -3,7 +3,7 @@ from firebase_admin import credentials, storage
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores.chroma import Chroma
+from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
@@ -13,6 +13,7 @@ import tempfile
 import os
 import firebase_admin
 from langchain.schema import Document
+
 
 pysqlite3 = __import__('pysqlite3')
 import sys
@@ -70,7 +71,7 @@ def generate_and_store_database_task():
             persist_directory=temp_dir
         )
         # Persist the vector store
-        vector_store.persist()
+        #vector_store.persist()
 
         # Upload the database files to Firebase Storage
         for root, _, files in os.walk(temp_dir):
@@ -106,14 +107,17 @@ def query_database(query):
         # Define a prompt template for the query
         prompt = PromptTemplate.from_template(
             """ 
-                You are a highly skilled assistant who excels in rewriting and summarizing information based on a given context. Your task is to rewrite the context so that it directly addresses the question. Ensure that the rewritten context is relevant, concise, and directly related to the user's question. If the data (context) doesn't exist, say so.
+                You are a highly skilled assistant who excels in rewriting, summarizing, and generating relevant information based on a given context. 
+                Your task is to rewrite and summarize the context so that it directly addresses the question. 
+                Ensure that the rewritten context is relevant, concise, and directly related to the user's question. 
+                If the data (context) doesn't exist, say so.
 
-            **Context:** {context}
+                **Context:** {context}
 
-            **Question:** {input}
+                **Question:** {input}
 
-            **Rewritten Context:**
-        """
+                **Rewritten and Summarized Context:**
+            """
         )
       
         # Create a retriever with similarity score threshold

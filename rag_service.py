@@ -15,9 +15,9 @@ import firebase_admin
 from langchain.schema import Document
 
 
-# pysqlite3 = __import__('pysqlite3')
-# import sys
-# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+pysqlite3 = __import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 app = FastAPI()
 
@@ -27,8 +27,8 @@ bucket_name = "ebook-ai-e51a0.appspot.com"
 # Initialize Firebase Admin SDK if it's not already initialized
 if not firebase_admin._apps:
     # Load Firebase credentials from a JSON file
-    cred = credentials.Certificate("config/ebook-ai-e51a0-firebase-adminsdk.json")
-    # cred = credentials.Certificate("/etc/secrets/ebook-ai-e51a0-firebase-adminsdk.json")
+    # cred = credentials.Certificate("config/ebook-ai-e51a0-firebase-adminsdk.json")
+    cred = credentials.Certificate("/etc/secrets/ebook-ai-e51a0-firebase-adminsdk.json")
     # Initialize the Firebase app with the credentials and bucket name
     firebase_admin.initialize_app(cred, {
         'storageBucket': bucket_name  # Replace with your actual Firebase project ID

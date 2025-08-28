@@ -15,9 +15,9 @@ import firebase_admin
 from langchain.schema import Document
 
 
-pysqlite3 = __import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# pysqlite3 = __import__('pysqlite3')
+# import sys
+# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 app = FastAPI()
 
@@ -27,8 +27,8 @@ bucket_name = "ebook-ai-e51a0.appspot.com"
 # Initialize Firebase Admin SDK if it's not already initialized
 if not firebase_admin._apps:
     # Load Firebase credentials from a JSON file
-    # cred = credentials.Certificate("config/ebook-ai-e51a0-firebase-adminsdk.json")
-    cred = credentials.Certificate("/etc/secrets/ebook-ai-e51a0-firebase-adminsdk.json")
+    cred = credentials.Certificate("config/ebook-ai-e51a0-firebase-adminsdk.json")
+    # cred = credentials.Certificate("/etc/secrets/ebook-ai-e51a0-firebase-adminsdk.json")
     # Initialize the Firebase app with the credentials and bucket name
     firebase_admin.initialize_app(cred, {
         'storageBucket': bucket_name  # Replace with your actual Firebase project ID
@@ -38,7 +38,7 @@ else:
 
 # Add Google API key to environment variables if not already set
 if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyCcZb8kY7KsefGijTiumFfFRB-W8FZc-6A"
+    os.environ["GOOGLE_API_KEY"] = "AIzaSyBLW53i_x5HdRJbYRv9-Vj--fCdv_Urrh8"
 
 # Function to generate and store the database of PDF documents
 def generate_and_store_database_task():
@@ -135,7 +135,7 @@ def query_database(query):
     retriever = vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.4})
     
     # Initialize the language model for responses
-    model_name = "gemini-pro"
+    model_name = "gemini-2.0-flash"
     llm = ChatGoogleGenerativeAI(model=model_name)
     
     # Create a retrieval chain to process the query

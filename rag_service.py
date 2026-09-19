@@ -1,7 +1,7 @@
 from fastapi import FastAPI, BackgroundTasks
 from firebase_admin import credentials, storage
 from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain.prompts import PromptTemplate

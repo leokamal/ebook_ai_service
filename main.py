@@ -1,12 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-import easyocr
-import io
 import os
 import warnings
-from PIL import Image, ImageEnhance, ImageFilter
 import sys
 import uvicorn
 from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase

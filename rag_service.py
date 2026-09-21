@@ -13,6 +13,7 @@ import tempfile
 import os
 import firebase_admin
 from langchain.schema import Document
+from functools import lru_cache
 
 
 pysqlite3 = __import__('pysqlite3')
@@ -39,6 +40,46 @@ else:
 # Add Google API key to environment variables if not already set
 if "GOOGLE_API_KEY" not in os.environ:
     os.environ["GOOGLE_API_KEY"] = "AIzaSyBLW53i_x5HdRJbYRv9-Vj--fCdv_Urrh8"
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+LOCAL_DIR = "./chroma_db_local"
+
+
+@lru_cache(maxsize=1)
+def get_embeddings_model():
+    return HuggingFaceEmbeddings(model_name=MODEL_NAME)
+
+
+@lru_cache(maxsize=1)
+def get_query_chain():
+    os.makedirs(LOCAL_DIR, exist_ok=True)
+    load_database_from_firebase(LOCAL_DIR)
+    vector_store = Chroma(
+        embedding_function=get_embeddings_model(),
+        persist_directory=LOCAL_DIR
+    )
+    prompt = PromptTemplate.from_template(
+        """
+            You are a highly skilled assistant who excels in rewriting, summarizing, and generating relevant information based on a given context.
+            Your task is to rewrite and summarize the context so that it directly addresses the question.
+            Ensure that the rewritten context is relevant, concise, and directly related to the user's question.
+            If the data (context) doesn't exist, say so.
+
+            **Context:** {context}
+
+            **Question:** {input}
+
+            **Rewritten and Summarized Context:**
+        """
+    )
+    retriever = vector_store.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"k": 3, "score_threshold": 0.4}
+    )
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+    return create_retrieval_chain(
+        retriever,
+        create_stuff_documents_chain(llm, prompt)
+    )
 
 # Function to generate and store the database of PDF documents
 def generate_and_store_database_task():
@@ -51,17 +92,18 @@ def generate_and_store_database_task():
     for blob in blobs:
         if blob.name.endswith('.pdf'):
             # Read the PDF file from Firebase Storage
-            pdf_content = PdfReader(BytesIO(blob.download_as_bytes()))
+            pdf_bytes = blob.download_as_bytes()
+            pdf_content = PdfReader(BytesIO(pdf_bytes))
             # Extract text from each page of the PDF
             text = ' '.join(page.extract_text() for page in pdf_content.pages)
             # Split the extracted text into chunks
             chunks = RecursiveCharacterTextSplitter(chunk_size=1000).split_text(text)
             # Create Document objects for each chunk and add metadata
             documents.extend([Document(page_content=chunk, metadata={"file_name": blob.name}) for chunk in chunks])
+            del pdf_bytes, pdf_content, text, chunks
     
     # Define the model name for embeddings
-    model_name = "sentence-transformers/all-MiniLM-L6-v2"
-    embeddings_model = HuggingFaceEmbeddings(model_name=model_name)
+    embeddings_model = get_embeddings_model()
 
     # Save the Chroma vector store to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -79,6 +121,8 @@ def generate_and_store_database_task():
                 blob = storage_bucket.blob(f"chroma_db/{file}")
                 blob.upload_from_filename(os.path.join(root, file))
                 print(f"Uploaded {file} to Firebase Storage")
+
+    get_query_chain.cache_clear()
 
 # Function to load the database from Firebase Storage
 def load_database_from_firebase(local_dir, force=False):
@@ -99,50 +143,7 @@ def load_database_from_firebase(local_dir, force=False):
 
 # Function to query the database
 def query_database(query):
-    # Define a persistent local directory for the database files
-    local_dir = "./chroma_db_local"
-    
-    # Create the directory if it doesn't exist
-    os.makedirs(local_dir, exist_ok=True)
-
-    # Load the database files from Firebase Storage if not already present locally
-    load_database_from_firebase(local_dir)
-
-    # Define the model name for embeddings
-    model_name = "sentence-transformers/all-MiniLM-L6-v2"
-    embeddings_model = HuggingFaceEmbeddings(model_name=model_name)
-
-    # Initialize the Chroma vector store using the local directory
-    vector_store = Chroma(embedding_function=embeddings_model, persist_directory=local_dir)
-    
-    # Define a prompt template for the query
-    prompt = PromptTemplate.from_template(
-        """ 
-            You are a highly skilled assistant who excels in rewriting, summarizing, and generating relevant information based on a given context. 
-            Your task is to rewrite and summarize the context so that it directly addresses the question. 
-            Ensure that the rewritten context is relevant, concise, and directly related to the user's question. 
-            If the data (context) doesn't exist, say so.
-
-            **Context:** {context}
-
-            **Question:** {input}
-
-            **Rewritten and Summarized Context:**
-        """
-    )
-  
-    # Create a retriever with similarity score threshold
-    retriever = vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.4})
-    
-    # Initialize the language model for responses
-    model_name = "gemini-2.0-flash"
-    llm = ChatGoogleGenerativeAI(model=model_name)
-    
-    # Create a retrieval chain to process the query
-    chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
-    
-    # Invoke the chain and return the response
-    return chain.invoke({"input": query})
+    return get_query_chain().invoke({"input": query})
 
 
 # To start FastAPI, use: uvicorn script_name:app --reload

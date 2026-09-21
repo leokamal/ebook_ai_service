@@ -3,11 +3,16 @@
 from PIL import Image, ImageEnhance, ImageFilter
 import easyocr
 import io
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4)
+def get_reader(lang):
+    return easyocr.Reader([lang], gpu=False)
 
 def perform_ocr(file_bytes, lang):
     try:
-        # Initialize the EasyOCR reader with the specified language(s)
-        reader = easyocr.Reader([lang])
+        reader = get_reader(lang)
 
         # Read the image from the uploaded file
         img = Image.open(io.BytesIO(file_bytes))

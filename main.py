@@ -8,8 +8,11 @@ import os
 import warnings
 from PIL import Image, ImageEnhance, ImageFilter
 import sys
+import uvicorn
 from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase
 from ocr_service import perform_ocr  # Import the updated OCR service
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 
 # Ignore warnings from pytesseract
 warnings.filterwarnings("ignore", category=UserWarning, module='easyocr')
@@ -45,7 +48,9 @@ async def upload_file(file: UploadFile = File(...), lang: str = Query(...)):
         raise HTTPException(status_code=400, detail="No selected file")
 
     try:
-        file_bytes = await file.read()
+        file_bytes = await file.read(MAX_UPLOAD_SIZE + 1)
+        if len(file_bytes) > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="File too large")
         extracted_text = perform_ocr(file_bytes, lang)  # Pass the language to the OCR function
         return {"extracted_text": extracted_text}
     except Exception as e:
@@ -78,7 +83,12 @@ def load_database(background_tasks: BackgroundTasks):
 
     # Load the database files from Firebase Storage if not already present locally
     
-    load_database_from_firebase(local_dir,True)
+    load_database_from_firebase(local_dir)
     return {"message": "Database loaded with successfully"}
 
-# To run the server, use the command: uvicorn main:app --reload
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+    )

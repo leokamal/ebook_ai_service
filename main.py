@@ -1,10 +1,18 @@
+# Workaround to ensure `pysqlite3` is used as `sqlite3` (must run before chromadb is imported)
+import sys
+try:
+    __import__('pysqlite3')
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import warnings
-import sys
 import uvicorn
-from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase
+from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase, get_query_chain
 from ocr_service import perform_ocr  # Import the updated OCR service
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
@@ -27,10 +35,6 @@ app.add_middleware(
 # Bucket name configuration
 bucket_name = "ebook-ai-e51a0.appspot.com"
 
-# Workaround to ensure `pysqlite3` is used as `sqlite3`
-pysqlite3 = __import__('pysqlite3')
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
 # Hello World endpoint
 @app.get("/hello")
 async def hello_world():
@@ -39,14 +43,15 @@ async def hello_world():
 # Upload and process file endpoint using the OCR service
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), lang: str = Query(...)):
-    if file.filename == '':
+    if not file.filename:
         raise HTTPException(status_code=400, detail="No selected file")
 
+    file_bytes = await file.read(MAX_UPLOAD_SIZE + 1)
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
     try:
-        file_bytes = await file.read(MAX_UPLOAD_SIZE + 1)
-        if len(file_bytes) > MAX_UPLOAD_SIZE:
-            raise HTTPException(status_code=413, detail="File too large")
-        extracted_text = perform_ocr(file_bytes, lang)  # Pass the language to the OCR function
+        # OCR is CPU-bound/blocking: run it off the event loop
+        extracted_text = await run_in_threadpool(perform_ocr, file_bytes, lang)
         return {"extracted_text": extracted_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -54,7 +59,10 @@ async def upload_file(file: UploadFile = File(...), lang: str = Query(...)):
 # Query the database endpoint
 @app.get("/query-database/")
 def query_database_endpoint(query: str = Query(...)):
-    response = query_database(query)
+    try:
+        response = query_database(query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     return {"response": response}
 
 # Test endpoint
@@ -76,10 +84,10 @@ def load_database(background_tasks: BackgroundTasks):
     # Create the directory if it doesn't exist
     os.makedirs(local_dir, exist_ok=True)
 
-    # Load the database files from Firebase Storage if not already present locally
-    
-    load_database_from_firebase(local_dir)
-    return {"message": "Database loaded with successfully"}
+    # Re-download the latest database and rebuild the cached query chain
+    load_database_from_firebase(local_dir, force=True)
+    get_query_chain.cache_clear()
+    return {"message": "Database loaded successfully"}
 
 if __name__ == "__main__":
     uvicorn.run(

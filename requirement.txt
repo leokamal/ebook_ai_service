@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 pysqlite3-binary
-langchain
+langchain-core
 langchain_google_genai
 PyPDF2
 langchain_text_splitters

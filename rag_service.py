@@ -1,12 +1,6 @@
 from firebase_admin import credentials, storage
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain_google_genai import ChatGoogleGenerativeAI
 from io import BytesIO
 import tempfile
 import os
@@ -14,10 +8,9 @@ import firebase_admin
 from langchain_core.documents import Document
 from functools import lru_cache
 
-
-pysqlite3 = __import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# NOTE: heavy imports (torch/sentence-transformers, chroma, gemini) are done lazily
+# inside the functions below so the web server can bind its port quickly on startup.
+# The pysqlite3 -> sqlite3 swap is done in main.py before anything imports chromadb.
 
 # Define the name of the Firebase Storage bucket
 bucket_name = "ebook-ai-e51a0.appspot.com"
@@ -43,11 +36,17 @@ LOCAL_DIR = "./chroma_db_local"
 
 @lru_cache(maxsize=1)
 def get_embeddings_model():
+    from langchain_huggingface import HuggingFaceEmbeddings
     return HuggingFaceEmbeddings(model_name=MODEL_NAME)
 
 
 @lru_cache(maxsize=1)
 def get_query_chain():
+    from langchain_chroma import Chroma
+    from langchain_core.prompts import PromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.runnables import RunnablePassthrough
+    from langchain_google_genai import ChatGoogleGenerativeAI
     os.makedirs(LOCAL_DIR, exist_ok=True)
     load_database_from_firebase(LOCAL_DIR, force=True)
     vector_store = Chroma(
@@ -90,6 +89,7 @@ def get_query_chain():
 
 # Function to generate and store the database of PDF documents
 def generate_and_store_database_task():
+    from langchain_chroma import Chroma
     # Access the Firebase Storage bucket
     storage_bucket = storage.bucket(bucket_name)
     # List all blobs (files) with a prefix of "books/"

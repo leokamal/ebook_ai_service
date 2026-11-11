@@ -1,13 +1,13 @@
 # ocr_service.py
 
 from PIL import Image, ImageEnhance, ImageFilter
-import easyocr
 import io
 from functools import lru_cache
 
 
 @lru_cache(maxsize=4)
 def get_reader(lang):
+    import easyocr  # lazy: importing torch/easyocr is slow and would delay port binding
     return easyocr.Reader([lang], gpu=False)
 
 def perform_ocr(file_bytes, lang):

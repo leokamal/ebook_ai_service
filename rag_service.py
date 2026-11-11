@@ -3,15 +3,15 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain.prompts import PromptTemplate
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains import create_retrieval_chain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI
 from io import BytesIO
 import tempfile
 import os
 import firebase_admin
-from langchain.schema import Document
+from langchain_core.documents import Document
 from functools import lru_cache
 
 
@@ -73,9 +73,19 @@ def get_query_chain():
         search_kwargs={"k": 3, "score_threshold": 0.4}
     )
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
-    return create_retrieval_chain(
-        retriever,
-        create_stuff_documents_chain(llm, prompt)
+    answer_chain = (
+        (lambda x: {
+            "context": "\n\n".join(d.page_content for d in x["context"]),
+            "input": x["input"],
+        })
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    # Same output shape as create_retrieval_chain: {"input", "context", "answer"}
+    return (
+        RunnablePassthrough.assign(context=(lambda x: x["input"]) | retriever)
+        .assign(answer=answer_chain)
     )
 
 # Function to generate and store the database of PDF documents

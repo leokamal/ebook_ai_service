@@ -1,4 +1,3 @@
-from fastapi import FastAPI, BackgroundTasks
 from firebase_admin import credentials, storage
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -19,8 +18,6 @@ from functools import lru_cache
 pysqlite3 = __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
-app = FastAPI()
 
 # Define the name of the Firebase Storage bucket
 bucket_name = "ebook-ai-e51a0.appspot.com"
@@ -52,7 +49,7 @@ def get_embeddings_model():
 @lru_cache(maxsize=1)
 def get_query_chain():
     os.makedirs(LOCAL_DIR, exist_ok=True)
-    load_database_from_firebase(LOCAL_DIR)
+    load_database_from_firebase(LOCAL_DIR, force=True)
     vector_store = Chroma(
         embedding_function=get_embeddings_model(),
         persist_directory=LOCAL_DIR
@@ -87,59 +84,83 @@ def generate_and_store_database_task():
     storage_bucket = storage.bucket(bucket_name)
     # List all blobs (files) with a prefix of "books/"
     blobs = storage_bucket.list_blobs(prefix="books/")
-    
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
+
     documents = []
     for blob in blobs:
-        if blob.name.endswith('.pdf'):
-            # Read the PDF file from Firebase Storage
-            pdf_bytes = blob.download_as_bytes()
-            pdf_content = PdfReader(BytesIO(pdf_bytes))
-            # Extract text from each page of the PDF
-            text = ' '.join(page.extract_text() for page in pdf_content.pages)
-            # Split the extracted text into chunks
-            chunks = RecursiveCharacterTextSplitter(chunk_size=1000).split_text(text)
-            # Create Document objects for each chunk and add metadata
+        if blob.name.lower().endswith('.pdf'):
+            try:
+                pdf_bytes = blob.download_as_bytes()
+                pdf_content = PdfReader(BytesIO(pdf_bytes))
+                # extract_text() may return None for image-only pages
+                text = ' '.join((page.extract_text() or '') for page in pdf_content.pages)
+            except Exception as e:
+                print(f"Skipping {blob.name}: {e}")
+                continue
+            if not text.strip():
+                continue
+            chunks = splitter.split_text(text)
             documents.extend([Document(page_content=chunk, metadata={"file_name": blob.name}) for chunk in chunks])
-            del pdf_bytes, pdf_content, text, chunks
-    
-    # Define the model name for embeddings
+
+    if not documents:
+        print("No PDF text found; database not regenerated.")
+        return
+
     embeddings_model = get_embeddings_model()
 
     # Save the Chroma vector store to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         vector_store = Chroma.from_documents(
-            documents=documents, 
+            documents=documents,
             embedding=embeddings_model,
             persist_directory=temp_dir
         )
-        # Persist the vector store
-        #vector_store.persist()
+        # Release file handles before uploading (required on some platforms)
+        try:
+            vector_store._client._system.stop()
+        except Exception:
+            pass
 
-        # Upload the database files to Firebase Storage
+        # Remove stale files from the previous database
+        for old_blob in list(storage_bucket.list_blobs(prefix="chroma_db/")):
+            old_blob.delete()
+
+        # Upload the database files, preserving the directory structure
         for root, _, files in os.walk(temp_dir):
             for file in files:
-                blob = storage_bucket.blob(f"chroma_db/{file}")
-                blob.upload_from_filename(os.path.join(root, file))
-                print(f"Uploaded {file} to Firebase Storage")
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, temp_dir).replace(os.sep, "/")
+                storage_bucket.blob(f"chroma_db/{rel_path}").upload_from_filename(full_path)
+                print(f"Uploaded {rel_path} to Firebase Storage")
 
     get_query_chain.cache_clear()
 
 # Function to load the database from Firebase Storage
 def load_database_from_firebase(local_dir, force=False):
     storage_bucket = storage.bucket(bucket_name)
-    # List all blobs (files) with a prefix of "chroma_db/"
-    blobs = storage_bucket.list_blobs(prefix="chroma_db/")
-    
-    # Download the database files from Firebase Storage
+    prefix = "chroma_db/"
+    blobs = storage_bucket.list_blobs(prefix=prefix)
+
+    base = os.path.realpath(local_dir)
     for blob in blobs:
-        local_path = os.path.join(local_dir, os.path.basename(blob.name))
-        # Check if the file already exists locally
+        rel_path = blob.name[len(prefix):]
+        if not rel_path or blob.name.endswith("/"):
+            continue  # skip "directory" placeholder blobs
+        parts = rel_path.split("/")
+        if any(p in ("", ".", "..") for p in parts):
+            print(f"Skipping suspicious blob name {blob.name}")
+            continue
+        local_path = os.path.realpath(os.path.join(base, *parts))
+        if os.path.commonpath([base, local_path]) != base:
+            print(f"Skipping blob outside target dir: {blob.name}")
+            continue
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         if not os.path.exists(local_path) or force:
             blob.download_to_filename(local_path)
             print(f"Downloaded {blob.name} to {local_path}")
         else:
             print(f"File {local_path} already exists, skipping download.")
-            
+
 
 # Function to query the database
 def query_database(query):

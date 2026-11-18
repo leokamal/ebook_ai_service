@@ -71,7 +71,7 @@ def get_query_chain():
         search_type="similarity_score_threshold",
         search_kwargs={"k": 3, "score_threshold": 0.4}
     )
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     answer_chain = (
         (lambda x: {
             "context": "\n\n".join(d.page_content for d in x["context"]),
@@ -174,7 +174,8 @@ def load_database_from_firebase(local_dir, force=False):
 
 # Function to query the database
 def query_database(query):
-    return get_query_chain().invoke({"input": query})
+    result = get_query_chain().invoke({"input": query})
+    return result["answer"]
 
 
 # To start FastAPI, use: uvicorn script_name:app --reload

@@ -15,6 +15,9 @@ import uvicorn
 from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase, get_query_chain
 from ocr_service import perform_ocr  # Import the updated OCR service
 
+import logging
+logger = logging.getLogger("uvicorn.error")
+
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 
 # Ignore warnings from pytesseract
@@ -62,6 +65,7 @@ def query_database_endpoint(query: str = Query(...)):
     try:
         response = query_database(query)
     except Exception as e:
+        logger.exception("query-database failed")
         raise HTTPException(status_code=500, detail=str(e))
     return {"response": response}
 

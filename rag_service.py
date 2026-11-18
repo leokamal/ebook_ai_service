@@ -48,7 +48,13 @@ def get_query_chain():
     from langchain_core.runnables import RunnablePassthrough
     from langchain_google_genai import ChatGoogleGenerativeAI
     os.makedirs(LOCAL_DIR, exist_ok=True)
-    load_database_from_firebase(LOCAL_DIR, force=True)
+    try:
+        load_database_from_firebase(LOCAL_DIR, force=True)
+    except Exception as e:
+        # e.g. Firebase billing disabled (403) -> fall back to the copy bundled in the repo
+        if not os.path.exists(os.path.join(LOCAL_DIR, "chroma.sqlite3")):
+            raise
+        print(f"Could not refresh database from Firebase ({e}); using local copy.")
     vector_store = Chroma(
         embedding_function=get_embeddings_model(),
         persist_directory=LOCAL_DIR
@@ -166,7 +172,13 @@ def load_database_from_firebase(local_dir, force=False):
             continue
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         if not os.path.exists(local_path) or force:
-            blob.download_to_filename(local_path)
+            tmp_path = local_path + ".part"
+            try:
+                blob.download_to_filename(tmp_path)
+                os.replace(tmp_path, local_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
             print(f"Downloaded {blob.name} to {local_path}")
         else:
             print(f"File {local_path} already exists, skipping download.")

@@ -16,7 +16,7 @@ FastAPI service: OCR for uploaded images (EasyOCR) and RAG over PDF books (Chrom
 
 ## Architecture
 - `main.py` - FastAPI app. A lifespan handler starts a background warm-up thread. Endpoints: `GET /health`, `POST /query` (SSE stream), `GET /query-database/` (non-streaming), `POST /upload` (OCR), admin `POST /generate-database/` and `POST /load-database/`. See `docs/API.md`.
-- `rag_service.py` - `ensure_local_index()` fetches only `chroma_db/VERSION.json` and downloads the index only if the version changed (into a temp dir, then atomic swap). Queries use the local Chroma only (no Supabase calls). `generate_and_store_database_task()` builds in a temp dir, uploads `VERSION.json` LAST, deletes stale remote files, then swaps the local dir and in-memory state. `_lock` guards the in-memory swap, `_update_lock` serializes download/generate.
+- `rag_service.py` - Startup uses the local index as-is (no Supabase call); it only calls `ensure_local_index()` when no local index exists. `/load-database/` calls `ensure_local_index()` explicitly: it fetches only `chroma_db/VERSION.json` and downloads the index only if the version changed (into a temp dir, then swap). Queries use the local Chroma only (no Supabase calls). `generate_and_store_database_task()` builds in a temp dir, uploads `VERSION.json` LAST, deletes stale remote files, then swaps the local dir and in-memory state. `_lock` guards the in-memory swap, `_update_lock` serializes download/generate.
 - `security.py` - `verify_admin_token` dependency (constant-time compare).
 - `ocr_service.py` - EasyOCR with preprocessing; readers cached per language.
 - `supabase_storage.py` - Supabase Storage wrapper (recursive list, download, upload, delete).

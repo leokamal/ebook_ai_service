@@ -226,7 +226,10 @@ def ensure_local_index() -> bool:
 # ----------------------------------------------------------------------------- warm-up
 def warm_up():
     try:
-        ensure_local_index()
+        if has_local_index():
+            logger.info("Local index found; using it without contacting Supabase.")
+        else:
+            ensure_local_index()  # first start only: fetch the published index
         with _lock:
             loaded = _state is not None
         if not loaded:

@@ -12,6 +12,7 @@ functions, so the web server binds its port quickly. The pysqlite3 -> sqlite3 sw
 main.py before anything imports chromadb. GOOGLE_API_KEY must be set in the environment.
 """
 import asyncio
+import gc
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ LLM_MODEL = "gemini-3.5-flash"
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db_local")
 VERSION_FILE = "VERSION.json"
 REMOTE_PREFIX = "chroma_db"
+EMBED_BATCH = 64  # chunks embedded/inserted per step while generating (bounds memory)
 TOP_K = 3
 SCORE_THRESHOLD = 0.4
 NOT_FOUND_ANSWER = "I couldn't find this information in the books."
@@ -350,30 +352,41 @@ def generate_and_store_database_task():
 
     with _update_lock:
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
-        documents = []
-        for name in sb.list_files("books"):
-            if not name.lower().endswith(".pdf"):
-                continue
-            try:
-                reader = PdfReader(BytesIO(sb.download_bytes(name)))
-                # extract_text() may return None for image-only pages
-                text = " ".join((page.extract_text() or "") for page in reader.pages)
-            except Exception as e:
-                logger.warning("Skipping %s: %s", name, e)
-                continue
-            if text.strip():
-                documents.extend(Document(page_content=c, metadata={"file_name": name})
-                                 for c in splitter.split_text(text))
-        if not documents:
-            logger.warning("No PDF text found; database not regenerated.")
+        pdf_names = [n for n in sb.list_files("books") if n.lower().endswith(".pdf")]
+        if not pdf_names:
+            logger.warning("No PDFs found; database not regenerated.")
             return
 
         parent = os.path.dirname(os.path.abspath(CHROMA_DIR)) or "."
         os.makedirs(parent, exist_ok=True)
         tmp = tempfile.mkdtemp(prefix=".chroma_new_", dir=parent)
         try:
-            vs = Chroma.from_documents(documents=documents, embedding=get_embeddings_model(),
-                                       persist_directory=tmp)
+            # Stream one PDF at a time and embed in small batches so peak memory stays low
+            # (holding every page/chunk of every book in RAM exceeded the Render limit).
+            vs = Chroma(embedding_function=get_embeddings_model(), persist_directory=tmp)
+            indexed_files, total_chunks = set(), 0
+            for name in pdf_names:
+                try:
+                    reader = PdfReader(BytesIO(sb.download_bytes(name)))
+                    # extract_text() may return None for image-only pages
+                    text = " ".join((page.extract_text() or "") for page in reader.pages)
+                    del reader
+                except Exception as e:
+                    logger.warning("Skipping %s: %s", name, e)
+                    continue
+                chunks = splitter.split_text(text) if text.strip() else []
+                del text
+                for i in range(0, len(chunks), EMBED_BATCH):
+                    vs.add_documents([Document(page_content=c, metadata={"file_name": name})
+                                      for c in chunks[i:i + EMBED_BATCH]])
+                if chunks:
+                    indexed_files.add(name)
+                    total_chunks += len(chunks)
+                logger.info("Indexed %s (%d chunks)", name, len(chunks))
+                del chunks
+                gc.collect()
+            if not total_chunks:
+                raise RuntimeError("No PDF text found; database not regenerated.")
             try:
                 vs._client._system.stop()  # release file handles before uploading
             except Exception:
@@ -382,8 +395,8 @@ def generate_and_store_database_task():
 
             version = {
                 "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
-                "files": sorted({d.metadata["file_name"] for d in documents}),
-                "chunks": len(documents),
+                "files": sorted(indexed_files),
+                "chunks": total_chunks,
                 "embedding_model": MODEL_NAME,
             }
             with open(_version_path(tmp), "w") as f:
@@ -407,4 +420,4 @@ def generate_and_store_database_task():
             raise
 
         _activate(tmp)  # swap local dir + in-memory chain, no restart needed
-        logger.info("Published index version %s (%d chunks)", version["version"], len(documents))
+        logger.info("Published index version %s (%d chunks)", version["version"], total_chunks)

@@ -1,3 +1,5 @@
 config/*
 __pycache__/*
 chroma_db_local/*
+.env
+.env.*

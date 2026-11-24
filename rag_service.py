@@ -1,10 +1,9 @@
-from firebase_admin import credentials, storage
+import supabase_storage as sb
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from io import BytesIO
 import tempfile
 import os
-import firebase_admin
 from langchain_core.documents import Document
 from functools import lru_cache
 
@@ -12,24 +11,7 @@ from functools import lru_cache
 # inside the functions below so the web server can bind its port quickly on startup.
 # The pysqlite3 -> sqlite3 swap is done in main.py before anything imports chromadb.
 
-# Define the name of the Firebase Storage bucket
-bucket_name = "ebook-ai-e51a0.appspot.com"
-
-# Initialize Firebase Admin SDK if it's not already initialized
-if not firebase_admin._apps:
-    # Load Firebase credentials from a JSON file
-    # cred = credentials.Certificate("config/ebook-ai-e51a0-firebase-adminsdk.json")
-    cred = credentials.Certificate("/etc/secrets/ebook-ai-e51a0-firebase-adminsdk.json")
-    # Initialize the Firebase app with the credentials and bucket name
-    firebase_admin.initialize_app(cred, {
-        'storageBucket': bucket_name  # Replace with your actual Firebase project ID
-    })
-else:
-    print("Firebase app already initialized.")
-
-# Add Google API key to environment variables if not already set
-if "GOOGLE_API_KEY" not in os.environ:
-    os.environ["GOOGLE_API_KEY"] = "AIzaSyBLW53i_x5HdRJbYRv9-Vj--fCdv_Urrh8"
+# Storage is Supabase (see supabase_storage.py). GOOGLE_API_KEY must be set in the environment.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LOCAL_DIR = "./chroma_db_local"
 
@@ -49,12 +31,12 @@ def get_query_chain():
     from langchain_google_genai import ChatGoogleGenerativeAI
     os.makedirs(LOCAL_DIR, exist_ok=True)
     try:
-        load_database_from_firebase(LOCAL_DIR, force=True)
+        load_database_from_supabase(LOCAL_DIR, force=True)
     except Exception as e:
-        # e.g. Firebase billing disabled (403) -> fall back to the copy bundled in the repo
+        # e.g. Supabase unreachable -> fall back to a previously downloaded local copy
         if not os.path.exists(os.path.join(LOCAL_DIR, "chroma.sqlite3")):
             raise
-        print(f"Could not refresh database from Firebase ({e}); using local copy.")
+        print(f"Could not refresh database from Supabase ({e}); using local copy.")
     vector_store = Chroma(
         embedding_function=get_embeddings_model(),
         persist_directory=LOCAL_DIR
@@ -96,27 +78,25 @@ def get_query_chain():
 # Function to generate and store the database of PDF documents
 def generate_and_store_database_task():
     from langchain_chroma import Chroma
-    # Access the Firebase Storage bucket
-    storage_bucket = storage.bucket(bucket_name)
-    # List all blobs (files) with a prefix of "books/"
-    blobs = storage_bucket.list_blobs(prefix="books/")
+    # List all files under "books/" in the Supabase bucket
+    book_paths = sb.list_files("books")
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
 
     documents = []
-    for blob in blobs:
-        if blob.name.lower().endswith('.pdf'):
+    for name in book_paths:
+        if name.lower().endswith('.pdf'):
             try:
-                pdf_bytes = blob.download_as_bytes()
+                pdf_bytes = sb.download_bytes(name)
                 pdf_content = PdfReader(BytesIO(pdf_bytes))
                 # extract_text() may return None for image-only pages
                 text = ' '.join((page.extract_text() or '') for page in pdf_content.pages)
             except Exception as e:
-                print(f"Skipping {blob.name}: {e}")
+                print(f"Skipping {name}: {e}")
                 continue
             if not text.strip():
                 continue
             chunks = splitter.split_text(text)
-            documents.extend([Document(page_content=chunk, metadata={"file_name": blob.name}) for chunk in chunks])
+            documents.extend([Document(page_content=chunk, metadata={"file_name": name}) for chunk in chunks])
 
     if not documents:
         print("No PDF text found; database not regenerated.")
@@ -138,48 +118,47 @@ def generate_and_store_database_task():
             pass
 
         # Remove stale files from the previous database
-        for old_blob in list(storage_bucket.list_blobs(prefix="chroma_db/")):
-            old_blob.delete()
+        sb.delete_files(sb.list_files("chroma_db"))
 
         # Upload the database files, preserving the directory structure
         for root, _, files in os.walk(temp_dir):
             for file in files:
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, temp_dir).replace(os.sep, "/")
-                storage_bucket.blob(f"chroma_db/{rel_path}").upload_from_filename(full_path)
-                print(f"Uploaded {rel_path} to Firebase Storage")
+                sb.upload_file(f"chroma_db/{rel_path}", full_path)
+                print(f"Uploaded {rel_path} to Supabase Storage")
 
     get_query_chain.cache_clear()
 
-# Function to load the database from Firebase Storage
-def load_database_from_firebase(local_dir, force=False):
-    storage_bucket = storage.bucket(bucket_name)
+# Function to load the database from Supabase Storage
+def load_database_from_supabase(local_dir, force=False):
     prefix = "chroma_db/"
-    blobs = storage_bucket.list_blobs(prefix=prefix)
+    names = sb.list_files("chroma_db")
 
     base = os.path.realpath(local_dir)
-    for blob in blobs:
-        rel_path = blob.name[len(prefix):]
-        if not rel_path or blob.name.endswith("/"):
-            continue  # skip "directory" placeholder blobs
+    for name in names:
+        rel_path = name[len(prefix):]
+        if not rel_path:
+            continue
         parts = rel_path.split("/")
         if any(p in ("", ".", "..") for p in parts):
-            print(f"Skipping suspicious blob name {blob.name}")
+            print(f"Skipping suspicious object name {name}")
             continue
         local_path = os.path.realpath(os.path.join(base, *parts))
         if os.path.commonpath([base, local_path]) != base:
-            print(f"Skipping blob outside target dir: {blob.name}")
+            print(f"Skipping object outside target dir: {name}")
             continue
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         if not os.path.exists(local_path) or force:
             tmp_path = local_path + ".part"
             try:
-                blob.download_to_filename(tmp_path)
+                with open(tmp_path, "wb") as f:
+                    f.write(sb.download_bytes(name))
                 os.replace(tmp_path, local_path)
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
-            print(f"Downloaded {blob.name} to {local_path}")
+            print(f"Downloaded {name} to {local_path}")
         else:
             print(f"File {local_path} already exists, skipping download.")
 

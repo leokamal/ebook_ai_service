@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import warnings
 import uvicorn
-from rag_service import query_database, generate_and_store_database_task, load_database_from_firebase, get_query_chain
+from rag_service import query_database, generate_and_store_database_task, load_database_from_supabase, get_query_chain
 from ocr_service import perform_ocr  # Import the updated OCR service
 
 import logging
@@ -34,9 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Bucket name configuration
-bucket_name = "ebook-ai-e51a0.appspot.com"
 
 # Hello World endpoint
 @app.get("/hello")
@@ -89,7 +86,7 @@ def load_database(background_tasks: BackgroundTasks):
     os.makedirs(local_dir, exist_ok=True)
 
     # Re-download the latest database and rebuild the cached query chain
-    load_database_from_firebase(local_dir, force=True)
+    load_database_from_supabase(local_dir, force=True)
     get_query_chain.cache_clear()
     return {"message": "Database loaded successfully"}
 

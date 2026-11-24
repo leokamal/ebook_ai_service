@@ -12,14 +12,22 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
-from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import os
 import warnings
+from contextlib import asynccontextmanager
+from typing import Optional
+
 import uvicorn
-from rag_service import query_database, generate_and_store_database_task, load_database_from_supabase, get_query_chain
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks, Depends
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+import rag_service
 from ocr_service import perform_ocr  # Import the updated OCR service
+from security import verify_admin_token
 
 import logging
 logger = logging.getLogger("uvicorn.error")
@@ -29,8 +37,28 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 # Ignore warnings from pytesseract
 warnings.filterwarnings("ignore", category=UserWarning, module='easyocr')
 
+@asynccontextmanager
+async def lifespan(_app):
+    # Warm up in a background thread so the port binds immediately.
+    rag_service.start_warmup_thread()
+    yield
+
+
 # Initialize FastAPI app
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
+
+
+class QueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    file_name: Optional[str] = None
+
+
+async def require_ready():
+    if not await asyncio.to_thread(rag_service.wait_ready, 30):
+        status = rag_service.get_health()
+        if status["status"] == "error":
+            raise HTTPException(status_code=503, detail=f"Index unavailable: {status.get('error')}")
+        raise HTTPException(status_code=503, detail="Service warming up, retry shortly")
 
 # Configure CORS middleware
 app.add_middleware(
@@ -62,39 +90,54 @@ async def upload_file(file: UploadFile = File(...), lang: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Query the database endpoint
-@app.get("/query-database/")
-def query_database_endpoint(query: str = Query(...)):
+@app.get("/health")
+def health():
+    return rag_service.get_health()
+
+
+# Streaming query endpoint (Server-Sent Events) - see docs/API.md
+@app.post("/query", dependencies=[Depends(require_ready)])
+async def query_stream(body: QueryRequest):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=422, detail="query must not be empty")
+    return StreamingResponse(
+        rag_service.stream_query_events(query, body.file_name),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# Backward-compatible non-streaming endpoint
+@app.get("/query-database/", dependencies=[Depends(require_ready)])
+def query_database_endpoint(query: str = Query(..., min_length=1, max_length=1000)):
     try:
-        response = query_database(query)
+        response = rag_service.query_database(query)
     except Exception as e:
-        logger.exception("query-database failed")
+        rag_service.logger.exception("query-database failed")
         raise HTTPException(status_code=500, detail=str(e))
     return {"response": response}
+
 
 # Test endpoint
 @app.get("/test/")
 def test():
     return {"response": "Hello world"}
 
-# Generate and store the database endpoint
-@app.post("/generate-database/")
+
+# Admin endpoints (require X-Admin-Token == $ADMIN_TOKEN)
+@app.post("/generate-database/", dependencies=[Depends(verify_admin_token)])
 def generate_database(background_tasks: BackgroundTasks):
-    background_tasks.add_task(generate_and_store_database_task)
+    background_tasks.add_task(rag_service.generate_and_store_database_task)
     return {"message": "Database generation and storage started"}
 
-@app.post("/load-database/")
-def load_database(background_tasks: BackgroundTasks):
-    # Define a persistent local directory for the database files
-    local_dir = "./chroma_db_local"
-    
-    # Create the directory if it doesn't exist
-    os.makedirs(local_dir, exist_ok=True)
 
-    # Re-download the latest database and rebuild the cached query chain
-    load_database_from_supabase(local_dir, force=True)
-    get_query_chain.cache_clear()
-    return {"message": "Database loaded successfully"}
+@app.post("/load-database/", dependencies=[Depends(verify_admin_token)])
+def load_database():
+    # Downloads only if the remote VERSION.json differs, then swaps the in-memory chain.
+    changed = rag_service.ensure_local_index()
+    return {"message": "Database loaded successfully" if changed else "Already up to date", "changed": changed}
+
 
 if __name__ == "__main__":
     uvicorn.run(

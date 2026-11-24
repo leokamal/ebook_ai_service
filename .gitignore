@@ -4,3 +4,4 @@ chroma_db_local/*
 .env
 .env.*
 .venv/
+.chroma_new_*/

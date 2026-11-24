@@ -6,6 +6,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # load SUPABASE_* / GOOGLE_API_KEY from a local .env (git-ignored)
+except ImportError:
+    pass
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware

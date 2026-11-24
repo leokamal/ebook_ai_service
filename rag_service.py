@@ -4,6 +4,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from io import BytesIO
 import tempfile
 import os
+import json
+import shutil
+from datetime import datetime, timezone
 from langchain_core.documents import Document
 from functools import lru_cache
 
@@ -14,6 +17,7 @@ from functools import lru_cache
 # Storage is Supabase (see supabase_storage.py). GOOGLE_API_KEY must be set in the environment.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LOCAL_DIR = "./chroma_db_local"
+VERSION_FILE = "VERSION.json"
 
 
 @lru_cache(maxsize=1)
@@ -59,7 +63,7 @@ def get_query_chain():
         search_type="similarity_score_threshold",
         search_kwargs={"k": 3, "score_threshold": 0.4}
     )
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+    llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash")
     answer_chain = (
         (lambda x: {
             "context": "\n\n".join(d.page_content for d in x["context"]),
@@ -116,6 +120,22 @@ def generate_and_store_database_task():
             vector_store._client._system.stop()
         except Exception:
             pass
+
+        # Version marker, stored identically in the local copy and in Supabase
+        version = {
+            "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+            "files": sorted(set(d.metadata["file_name"] for d in documents)),
+            "chunks": len(documents),
+            "embedding_model": MODEL_NAME,
+        }
+        with open(os.path.join(temp_dir, VERSION_FILE), "w") as f:
+            json.dump(version, f, indent=2)
+
+        # Keep a local copy (./chroma_db_local) in sync with what is uploaded
+        if os.path.isdir(LOCAL_DIR):
+            shutil.rmtree(LOCAL_DIR, ignore_errors=True)
+        shutil.copytree(temp_dir, LOCAL_DIR, dirs_exist_ok=True)
+        print(f"Local database written to {LOCAL_DIR} (version {version['version']})")
 
         # Remove stale files from the previous database
         sb.delete_files(sb.list_files("chroma_db"))

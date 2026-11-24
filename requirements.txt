@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-pysqlite3-binary
+pysqlite3-binary; sys_platform == "linux"
 langchain-core
 langchain_google_genai
 PyPDF2
@@ -13,3 +13,4 @@ easyocr
 python-multipart
 torch
 pillow
+python-dotenv

@@ -112,11 +112,10 @@ async def query_stream(body: QueryRequest):
 @app.get("/query-database/", dependencies=[Depends(require_ready)])
 def query_database_endpoint(query: str = Query(..., min_length=1, max_length=1000)):
     try:
-        response = rag_service.query_database(query)
+        return rag_service.query_database(query)  # {"answer": ..., "context": [...]}
     except Exception as e:
         rag_service.logger.exception("query-database failed")
         raise HTTPException(status_code=500, detail=str(e))
-    return {"response": response}
 
 
 # Test endpoint

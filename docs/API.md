@@ -44,7 +44,7 @@ If the index is not loaded yet, `/query` and `/query-database/` wait up to 30 s,
 Retry after 2-5 s. If loading failed: `{"detail": "Index unavailable: ..."}`.
 
 ## GET /query-database/?query=...
-Non-streaming, unchanged shape: `{"response": "..."}`.
+Non-streaming: `{"answer": "...", "context": ["retrieved chunk", ...]}`. The streaming `sources` event also carries `context`.
 
 ## Admin (not for the app)
 `POST /generate-database/` and `POST /load-database/` need header `X-Admin-Token: <ADMIN_TOKEN>`; without it: 403 (503 if `ADMIN_TOKEN` is not configured on the server).

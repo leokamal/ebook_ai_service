@@ -34,7 +34,6 @@ VERSION_FILE = "VERSION.json"
 REMOTE_PREFIX = "chroma_db"
 EMBED_BATCH = 64  # chunks embedded/inserted per step while generating (bounds memory)
 TOP_K = 3
-SCORE_THRESHOLD = 0.4
 NOT_FOUND_ANSWER = "I couldn't find this information in the books."
 
 PROMPT = """
@@ -275,12 +274,14 @@ def get_health():
 
 # ------------------------------------------------------------------------------ querying
 def retrieve(query, file_name=None):
-    """Similarity search on the local Chroma index; keeps chunks above SCORE_THRESHOLD."""
+    """Top-k similarity search on the local Chroma index."""
     kwargs = {"k": TOP_K}
     if file_name:
         kwargs["filter"] = {"file_name": file_name}
-    results = _get_state()["store"].similarity_search_with_relevance_scores(query, **kwargs)
-    return [doc for doc, score in results if score >= SCORE_THRESHOLD]
+    # No score cut-off: all-MiniLM-L6-v2 is English-centric, so French questions score low even
+    # for the right chunk and a threshold dropped everything. The prompt tells Gemini to say
+    # so when the context doesn't contain the answer.
+    return _get_state()["store"].similarity_search(query, **kwargs)
 
 
 def _build_prompt(query, docs):
@@ -309,8 +310,9 @@ def query_database(query, file_name=None):
     docs = retrieve(query, file_name)
     retrieve_ms = (time.perf_counter() - t0) * 1000
     answer = _chunk_text(get_llm().invoke(_build_prompt(query, docs))) if docs else NOT_FOUND_ANSWER
-    logger.info("query retrieve_ms=%.0f total_ms=%.0f", retrieve_ms, (time.perf_counter() - t0) * 1000)
-    return answer
+    logger.info("query retrieve_ms=%.0f total_ms=%.0f docs=%d", retrieve_ms,
+                (time.perf_counter() - t0) * 1000, len(docs))
+    return {"answer": answer, "context": [d.page_content for d in docs]}
 
 
 def sse(event, data):
@@ -324,7 +326,7 @@ async def stream_query_events(query, file_name=None):
         docs = await asyncio.to_thread(retrieve, query, file_name)
         retrieve_ms = (time.perf_counter() - t0) * 1000
         sources = sorted({d.metadata.get("file_name") for d in docs if d.metadata.get("file_name")})
-        yield sse("sources", {"sources": sources})
+        yield sse("sources", {"sources": sources, "context": [d.page_content for d in docs]})
         first_ms = None
         if not docs:
             yield sse("token", {"text": NOT_FOUND_ANSWER})

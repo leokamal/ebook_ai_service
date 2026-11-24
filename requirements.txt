@@ -1,15 +1,17 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
-pysqlite3-binary
+pysqlite3-binary; sys_platform == "linux"
 langchain-core
 langchain_google_genai
 PyPDF2
 langchain_text_splitters
 langchain_chroma
-firebase_admin
+supabase
 langchain-huggingface
 sentence_transformers
 easyocr
 python-multipart
 torch
 pillow
+python-dotenv

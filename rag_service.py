@@ -87,12 +87,36 @@ def has_local_index(directory=None):
     return os.path.exists(os.path.join(directory or CHROMA_DIR, "chroma.sqlite3"))
 
 
+def _replace_contents(new_dir, target):
+    """Empty `target` (keeping the directory itself) and move `new_dir`'s contents into it.
+    shutil.move copies across filesystems when a plain rename isn't possible."""
+    os.makedirs(target, exist_ok=True)
+    for name in os.listdir(target):
+        p = os.path.join(target, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            os.remove(p)
+    for name in os.listdir(new_dir):
+        shutil.move(os.path.join(new_dir, name), os.path.join(target, name))
+    shutil.rmtree(new_dir, ignore_errors=True)
+
+
 def swap_directory(new_dir, target):
     """Atomically replace `target` with `new_dir` (rename old -> .old, new -> target, delete .old)."""
     old = target + ".old"
     shutil.rmtree(old, ignore_errors=True)
+    if os.path.ismount(target):
+        # target is a mount point (e.g. a Render persistent disk): it can't be renamed,
+        # so replace its contents in place instead.
+        _replace_contents(new_dir, target)
+        return
     if os.path.exists(target):
-        os.rename(target, old)
+        try:
+            os.rename(target, old)
+        except OSError:
+            _replace_contents(new_dir, target)
+            return
     try:
         os.rename(new_dir, target)
     except Exception:

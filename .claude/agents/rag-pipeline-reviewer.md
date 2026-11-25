@@ -12,6 +12,6 @@ Check:
 3. **Index lifecycle**: build in a temp dir, release Chroma handles before upload, delete the old `chroma_db/` index only after the new one is ready (avoid a window with no index), and clear `get_query_chain` cache after changes.
 4. **Retrieval config**: `similarity_score_threshold` with `score_threshold` suits the embedding model's score scale; k value; behaviour when nothing matches.
 5. **Memory/perf**: whole PDFs held in memory, embedding model loaded once (lru_cache), OCR readers cached per language (maxsize), blocking work run off the event loop.
-6. **Failure modes**: Supabase unreachable → fallback to local copy; partial downloads (`.part` handling).
+6. **Failure modes**: R2 unreachable → fallback to local copy; partial or corrupted downloads (temp dir + sha256 check); `data.json` updated only after all uploads succeed.
 
 Report findings with file:line, impact and a concrete suggestion. Do not edit files.

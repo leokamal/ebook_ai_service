@@ -4,6 +4,10 @@ from PIL import Image, ImageEnhance, ImageFilter
 import io
 from functools import lru_cache
 
+# Smaller images are upscaled 2x to help recognition. 2 x 1280 matches EasyOCR's default
+# canvas size (2560), so upscaling anything larger mostly costs time.
+UPSCALE_BELOW = 1280
+
 
 @lru_cache(maxsize=4)
 def get_reader(lang):
@@ -22,15 +26,13 @@ def perform_ocr(file_bytes, lang):
         img = img.filter(ImageFilter.MedianFilter())  # Reduce noise
         enhancer = ImageEnhance.Contrast(img)
         img = enhancer.enhance(2)  # Increase contrast
-        img = img.resize((img.width * 2, img.height * 2))  # Upscale the image
+        if max(img.size) < UPSCALE_BELOW:
+            img = img.resize((img.width * 2, img.height * 2))  # Upscale small images
 
-        # Convert the PIL image back to bytes for OCR processing
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='PNG')
-        img_byte_arr = img_byte_arr.getvalue()
-
-        # Perform OCR using EasyOCR with the specified language
-        result = reader.readtext(img_byte_arr)
+        # Perform OCR using EasyOCR with the specified language.
+        # Pixels are passed directly: no PNG encode here and decode inside EasyOCR.
+        import numpy as np
+        result = reader.readtext(np.asarray(img))
 
         # Extract the text from the OCR result
         extracted_text = ' '.join([item[1] for item in result])

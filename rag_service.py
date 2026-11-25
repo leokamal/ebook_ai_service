@@ -1,11 +1,12 @@
-"""RAG service: Chroma index kept locally (CHROMA_DIR) and published to Supabase Storage.
+"""RAG service: Chroma index kept locally (CHROMA_DIR) and published to Cloudflare R2.
 
 Flow
-  startup  -> warm_up(): ensure_local_index() (downloads only if VERSION.json changed),
+  startup  -> warm_up(): download the published index only if there is no local one,
               load embeddings + open Chroma + dummy search, status -> "ready".
-  query    -> retrieve() (local Chroma only, zero Supabase calls) -> Gemini (streamed or not).
-  publish  -> generate_and_store_database_task(): build in a temp dir, upload files with
-              VERSION.json LAST, delete stale remote files, swap local dir + in-memory state.
+  query    -> retrieve() (local Chroma only, zero R2 calls) -> Gemini (streamed or not).
+  publish  -> generate_and_store_database_task(): build in a temp dir, upload to
+              chroma_db/<version>/, update data.json LAST, swap local dir + in-memory state,
+              delete old index folders.
 
 NOTE: heavy imports (torch/sentence-transformers, chroma, gemini, PyPDF2) are lazy, inside
 functions, so the web server binds its port quickly. The pysqlite3 -> sqlite3 swap is done in
@@ -13,25 +14,33 @@ main.py before anything imports chromadb. GOOGLE_API_KEY must be set in the envi
 """
 import asyncio
 import gc
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import lru_cache
 
-import supabase_storage as sb
+import catalog
+import r2_storage as storage
 
 logger = logging.getLogger("uvicorn.error")
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "gemini-3.5-flash"
+# The model defaults to "medium"; "minimal" answers sooner. Raise it if answers get worse.
+THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL") or "minimal"
+TRANSFER_WORKERS = 8  # index files downloaded/uploaded in parallel
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db_local")
 VERSION_FILE = "VERSION.json"
 REMOTE_PREFIX = "chroma_db"
+VERSION_PATTERN = re.compile(r"\d{8}T\d{6}Z")
 EMBED_BATCH = 64  # chunks embedded/inserted per step while generating (bounds memory)
 TOP_K = 3
 NOT_FOUND_ANSWER = "I couldn't find this information in the books."
@@ -93,7 +102,7 @@ def get_embeddings_model():
 @lru_cache(maxsize=1)
 def get_llm():
     from langchain_google_genai import ChatGoogleGenerativeAI
-    return ChatGoogleGenerativeAI(model=LLM_MODEL)
+    return ChatGoogleGenerativeAI(model=LLM_MODEL, thinking_level=THINKING_LEVEL)
 
 
 # ------------------------------------------------------------------ local index state
@@ -187,47 +196,73 @@ def _get_state():
     return st
 
 
-# ----------------------------------------------------------------- download from Supabase
-def load_database_from_supabase(dest_dir):
-    """Download every object under chroma_db/ into `dest_dir` (path-traversal guarded)."""
-    prefix = f"{REMOTE_PREFIX}/"
+# ----------------------------------------------------------------------- download from R2
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download_index(index, dest_dir):
+    """Download the files listed in data.json's `index` into `dest_dir`.
+
+    Paths are traversal-guarded and every file must match its recorded sha256.
+    """
     base = os.path.realpath(dest_dir)
     os.makedirs(base, exist_ok=True)
-    for name in sb.list_files(REMOTE_PREFIX):
-        rel_path = name[len(prefix):]
-        if not rel_path:
-            continue
-        parts = rel_path.split("/")
+    targets = []
+    for item in index["files"]:  # validate every path before downloading anything
+        parts = item["path"].split("/")
         if any(p in ("", ".", "..") for p in parts):
-            logger.warning("Skipping suspicious object name %s", name)
-            continue
+            raise ValueError(f"Suspicious index file path: {item['path']}")
         local_path = os.path.realpath(os.path.join(base, *parts))
         if os.path.commonpath([base, local_path]) != base:
-            logger.warning("Skipping object outside target dir: %s", name)
-            continue
+            raise ValueError(f"Index file outside target dir: {item['path']}")
+        targets.append((item, local_path))
+
+    def fetch(target):
+        item, local_path = target
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, "wb") as f:
-            f.write(sb.download_bytes(name))
-        logger.info("Downloaded %s", name)
+        storage.download_file(f"{index['prefix']}/{item['path']}", local_path)
+        if _sha256(local_path) != item["sha256"]:
+            raise ValueError(f"Checksum mismatch for {item['path']}")
+        logger.info("Downloaded %s", item["path"])
+
+    with ThreadPoolExecutor(max_workers=TRANSFER_WORKERS) as pool:
+        list(pool.map(fetch, targets))  # list() re-raises the first failure
+
+
+def _write_version(directory, version):
+    with open(_version_path(directory), "w") as f:
+        json.dump(version, f, indent=2)
 
 
 def ensure_local_index() -> bool:
     """Make CHROMA_DIR match the published index. Returns True if a new index was installed.
 
-    Only VERSION.json is fetched when nothing changed. Falls back to the local copy if
-    Supabase is unreachable.
+    Only data.json is fetched when nothing changed. Falls back to the local copy if
+    R2 is unreachable.
     """
     with _update_lock:
         local_v = read_local_version()
         try:
-            remote_v = json.loads(sb.download_bytes(f"{REMOTE_PREFIX}/{VERSION_FILE}"))
+            data, _ = storage.read_data()
         except Exception as e:
             if has_local_index():
-                logger.warning("Supabase unreachable (%s); using local index.", e)
+                logger.warning("R2 unreachable (%s); using local index.", e)
                 return False
-            raise RuntimeError(f"No local index and remote VERSION.json unavailable: {e}") from e
+            raise RuntimeError(f"No local index and data.json unavailable: {e}") from e
 
-        if local_v and local_v.get("version") == remote_v.get("version") and has_local_index():
+        index = (data or {}).get("index")
+        if not index:
+            if has_local_index():
+                logger.warning("No published index in data.json; keeping local index.")
+                return False
+            raise RuntimeError("No published index. Run /generate-database/ first.")
+
+        if local_v and local_v.get("version") == index.get("version") and has_local_index():
             logger.info("Local index is up to date (version %s); no download.", local_v.get("version"))
             return False
 
@@ -235,9 +270,15 @@ def ensure_local_index() -> bool:
         os.makedirs(parent, exist_ok=True)
         tmp = tempfile.mkdtemp(prefix=".chroma_new_", dir=parent)  # same filesystem as CHROMA_DIR
         try:
-            load_database_from_supabase(tmp)
-            if not (has_local_index(tmp) and os.path.exists(_version_path(tmp))):
-                raise RuntimeError("Downloaded index is incomplete (chroma.sqlite3 / VERSION.json missing)")
+            download_index(index, tmp)
+            if not has_local_index(tmp):
+                raise RuntimeError("Downloaded index is incomplete (chroma.sqlite3 missing)")
+            _write_version(tmp, {
+                "version": index["version"],
+                "files": sorted(b["file_name"] for b in data.get("books", []) if b.get("indexed")),
+                "chunks": index.get("chunks"),
+                "embedding_model": index.get("embedding_model"),
+            })
         except Exception as e:
             shutil.rmtree(tmp, ignore_errors=True)
             if has_local_index():
@@ -245,7 +286,7 @@ def ensure_local_index() -> bool:
                 return False
             raise
         _activate(tmp)
-        logger.info("Installed index version %s", remote_v.get("version"))
+        logger.info("Installed index version %s", index["version"])
         return True
 
 
@@ -253,7 +294,7 @@ def ensure_local_index() -> bool:
 def warm_up():
     try:
         if has_local_index():
-            logger.info("Local index found; using it without contacting Supabase.")
+            logger.info("Local index found; using it without contacting R2.")
         else:
             ensure_local_index()  # first start only: fetch the published index
         with _lock:
@@ -374,8 +415,37 @@ async def stream_query_events(query, file_name=None):
 
 
 # ---------------------------------------------------------------------------- publishing
+def _upload_index(directory, prefix):
+    """Upload every file in `directory` under `prefix`; return the manifest for data.json."""
+    paths = [os.path.join(root, file) for root, _, files in os.walk(directory) for file in files]
+
+    def send(local_path):
+        rel = os.path.relpath(local_path, directory).replace(os.sep, "/")
+        storage.upload_file(f"{prefix}/{rel}", local_path)
+        logger.info("Uploaded %s", rel)
+        return {"path": rel, "sha256": _sha256(local_path)}
+
+    with ThreadPoolExecutor(max_workers=TRANSFER_WORKERS) as pool:
+        manifest = list(pool.map(send, paths))
+    return sorted(manifest, key=lambda item: item["path"])
+
+
+def _delete_old_indexes(current):
+    """Delete every index folder older than `current`, so only the newest one is kept.
+    Newer folders are left alone: another server may still be uploading them."""
+    stale = []
+    for key in storage.list_files(REMOTE_PREFIX):
+        parts = key.split("/")
+        if len(parts) < 3:
+            continue
+        version = parts[1]
+        if VERSION_PATTERN.fullmatch(version) and version < current:
+            stale.append(key)
+    storage.delete_files(stale)
+
+
 def generate_and_store_database_task():
-    """Build the index from books/*.pdf and publish it safely (VERSION.json uploaded last)."""
+    """Build the index from books/*.pdf and publish it safely (data.json updated last)."""
     from PyPDF2 import PdfReader
     from io import BytesIO
     from langchain_chroma import Chroma
@@ -384,7 +454,7 @@ def generate_and_store_database_task():
 
     with _update_lock:
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
-        pdf_names = [n for n in sb.list_files("books") if n.lower().endswith(".pdf")]
+        pdf_names = [n for n in storage.list_files("books") if n.lower().endswith(".pdf")]
         if not pdf_names:
             logger.warning("No PDFs found; database not regenerated.")
             return
@@ -399,7 +469,7 @@ def generate_and_store_database_task():
             indexed_files, total_chunks = set(), 0
             for name in pdf_names:
                 try:
-                    reader = PdfReader(BytesIO(sb.download_bytes(name)))
+                    reader = PdfReader(BytesIO(storage.download_bytes(name)))
                     # extract_text() may return None for image-only pages
                     text = " ".join((page.extract_text() or "") for page in reader.pages)
                     del reader
@@ -431,25 +501,30 @@ def generate_and_store_database_task():
                 "chunks": total_chunks,
                 "embedding_model": MODEL_NAME,
             }
-            with open(_version_path(tmp), "w") as f:
-                json.dump(version, f, indent=2)
+            prefix = f"{REMOTE_PREFIX}/{version['version']}"
+            manifest = _upload_index(tmp, prefix)
+            _write_version(tmp, version)  # local only; data.json is the remote record
 
-            # Upload everything except VERSION.json first, VERSION.json LAST.
-            rel_paths = []
-            for root, _, files in os.walk(tmp):
-                for file in files:
-                    rel_paths.append(os.path.relpath(os.path.join(root, file), tmp).replace(os.sep, "/"))
-            rel_paths.sort(key=lambda p: p == VERSION_FILE)
-            for rel in rel_paths:
-                sb.upload_file(f"{REMOTE_PREFIX}/{rel}", os.path.join(tmp, *rel.split("/")))
-                logger.info("Uploaded %s", rel)
+            def publish(data):
+                data["books"] = catalog.sync_books(
+                    data.get("books", []), storage.list_objects("books"), indexed_files)
+                data["index"] = {
+                    "version": version["version"],
+                    "prefix": prefix,
+                    "files": manifest,
+                    "chunks": total_chunks,
+                    "embedding_model": MODEL_NAME,
+                }
 
-            # Delete stale remote files only after the new upload fully succeeded.
-            keep = {f"{REMOTE_PREFIX}/{p}" for p in rel_paths}
-            sb.delete_files([p for p in sb.list_files(REMOTE_PREFIX) if p not in keep])
+            storage.update_data(publish)  # publish point: only after every upload succeeded
         except Exception:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
+
+        try:
+            _delete_old_indexes(version["version"])
+        except Exception as e:
+            logger.warning("Could not delete old index folders: %s", e)
 
         _activate(tmp)  # swap local dir + in-memory chain, no restart needed
         logger.info("Published index version %s (%d chunks)", version["version"], total_chunks)

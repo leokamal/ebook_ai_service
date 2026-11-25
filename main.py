@@ -8,7 +8,7 @@ except ImportError:
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # load SUPABASE_* / GOOGLE_API_KEY from a local .env (git-ignored)
+    load_dotenv()  # load R2_* / GOOGLE_API_KEY from a local .env (git-ignored)
 except ImportError:
     pass
 
@@ -133,7 +133,7 @@ def generate_database(background_tasks: BackgroundTasks):
 
 @app.post("/load-database/", dependencies=[Depends(verify_admin_token)])
 def load_database():
-    # Downloads only if the remote VERSION.json differs, then swaps the in-memory chain.
+    # Downloads only if data.json lists a different index version, then swaps the in-memory chain.
     changed = rag_service.ensure_local_index()
     return {"message": "Database loaded successfully" if changed else "Already up to date", "changed": changed}
 

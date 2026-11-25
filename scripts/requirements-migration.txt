@@ -1,0 +1,3 @@
+# Only for scripts/migrate_supabase_to_r2.py. Delete together with supabase_storage.py.
+supabase
+python-dotenv

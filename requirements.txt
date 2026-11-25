@@ -3,11 +3,11 @@ fastapi
 uvicorn
 pysqlite3-binary; sys_platform == "linux"
 langchain-core
-langchain_google_genai
+langchain_google_genai>=4.5
 PyPDF2
 langchain_text_splitters
 langchain_chroma
-supabase
+boto3>=1.36
 langchain-huggingface
 sentence_transformers
 easyocr

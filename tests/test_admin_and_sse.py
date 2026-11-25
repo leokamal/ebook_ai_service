@@ -53,7 +53,8 @@ def test_sse_sources_tokens_done(monkeypatch):
 
     events = [_parse(e) for e in _collect()]
     assert events == [
-        ("sources", {"sources": ["books/x.pdf"]}),
+        ("sources", {"sources": ["books/x.pdf"],
+                     "context": [{"page_content": "c", "metadata": {"file_name": "books/x.pdf"}}]}),
         ("token", {"text": "Hel"}),
         ("token", {"text": "lo"}),
         ("done", {}),
@@ -64,7 +65,7 @@ def test_sse_not_found_skips_llm(monkeypatch):
     monkeypatch.setattr(rag, "retrieve", lambda q, f=None: [])
     monkeypatch.setattr(rag, "astream_answer", lambda *a: (_ for _ in ()).throw(AssertionError("LLM called")))
     events = [_parse(e) for e in _collect()]
-    assert events[0] == ("sources", {"sources": []})
+    assert events[0] == ("sources", {"sources": [], "context": []})
     assert events[1] == ("token", {"text": rag.NOT_FOUND_ANSWER})
     assert events[-1] == ("done", {})
 
@@ -81,7 +82,7 @@ def test_file_name_filter_passed(monkeypatch):
     seen = {}
 
     class Store:
-        def similarity_search_with_relevance_scores(self, q, **kw):
+        def similarity_search(self, q, **kw):
             seen.update(kw)
             return []
     monkeypatch.setattr(rag, "_state", {"store": Store(), "version": None})

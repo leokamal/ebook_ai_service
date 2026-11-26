@@ -1,0 +1,19 @@
+name: ebook-ai
+
+services:
+  api:
+    build: .
+    image: ebook-ai-service
+    env_file: .env
+    environment:
+      # kept in the volume so restarts don't download the index and models again
+      CHROMA_DIR: /data/chroma
+      HF_HOME: /data/hf
+      EASYOCR_MODULE_PATH: /data/easyocr
+    ports:
+      - "127.0.0.1:8000:8000"  # this computer only
+    volumes:
+      - data:/data
+
+volumes:
+  data:
